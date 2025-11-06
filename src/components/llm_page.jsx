@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, MessageSquare, Leaf, Menu, X } from 'lucide-react';
+import { Send, Loader2, MessageSquare, Leaf, Menu, X, Upload, Image as ImageIcon } from 'lucide-react';
 
 const KrishiMitra = () => {
   const [language, setLanguage] = useState('English');
@@ -8,7 +8,12 @@ const KrishiMitra = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [threadId] = useState(() => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [waitingForImage, setWaitingForImage] = useState(false);
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [pendingImageQuery, setPendingImageQuery] = useState(null);
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
   const API_BASE_URL = 'http://localhost:8000';
 
   const TEXT = {
@@ -62,15 +67,31 @@ const KrishiMitra = () => {
       English: [
         "What crops are best for this season?",
         "Tell me about PM-KISAN scheme",
-        "What's today's weather forecast?",
+        "Check my plant for diseases",
         "Current market prices for wheat"
       ],
       Hindi: [
         "इस मौसम के लिए कौन सी फसलें सबसे अच्छी हैं?",
         "मुझे पीएम-किसान योजना के बारे में बताएं",
-        "आज का मौसम पूर्वानुमान क्या है?",
+        "मेरे पौधे में बीमारी की जांच करें",
         "गेहूं के वर्तमान बाजार मूल्य"
       ]
+    },
+    upload_prompt: {
+      English: "Please upload an image of the affected plant leaf:",
+      Hindi: "कृपया प्रभावित पौधे की पत्ती की तस्वीर अपलोड करें:"
+    },
+    upload_button: {
+      English: "Choose Image",
+      Hindi: "तस्वीर चुनें"
+    },
+    analyze_button: {
+      English: "Analyze Plant",
+      Hindi: "पौधे का विश्लेषण करें"
+    },
+    image_selected: {
+      English: "Image selected. Click 'Analyze Plant' to diagnose.",
+      Hindi: "तस्वीर चुनी गई। निदान के लिए 'पौधे का विश्लेषण करें' पर क्लिक करें।"
     }
   };
 
@@ -92,13 +113,25 @@ const KrishiMitra = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  const sendMessage = async (text = inputValue) => {
-    if (!text.trim() || isLoading) return;
+  // Check if response indicates need for image upload
+  const checkForImageRequest = (responseText) => {
+    const imageKeywords = [
+      'upload', 'image', 'photo', 'picture', 'leaf',
+      'अपलोड', 'तस्वीर', 'फोटो', 'पत्ती', 'छवि'
+    ];
+
+    const lowerResponse = responseText.toLowerCase();
+    return imageKeywords.some(keyword => lowerResponse.includes(keyword));
+  };
+
+  const sendMessage = async (text = inputValue, imagePath = null) => {
+    if ((!text.trim() && !imagePath) || isLoading) return;
 
     const userMessage = {
       role: 'user',
       content: text,
-      timestamp: new Date()
+      timestamp: new Date(),
+      image: imagePreview
     };
 
     setMessages(prev => [...prev, userMessage]);
@@ -106,13 +139,20 @@ const KrishiMitra = () => {
     setIsLoading(true);
 
     try {
+      let messageToSend = text;
+
+      // If we have an image path, append it to the message
+      if (imagePath) {
+        messageToSend = `${text} [Image path: ${imagePath}]`;
+      }
+
       const response = await fetch(`${API_BASE_URL}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          transcript: text,
+          transcript: messageToSend,
           language: language,
           thread_id: threadId
         })
@@ -131,6 +171,15 @@ const KrishiMitra = () => {
           timestamp: new Date()
         };
         setMessages(prev => [...prev, botMessage]);
+
+        // Check if the response is asking for an image
+        if (checkForImageRequest(data.response)) {
+          setWaitingForImage(true);
+          setPendingImageQuery(text);
+        } else {
+          setWaitingForImage(false);
+          setPendingImageQuery(null);
+        }
       } else {
         throw new Error(data.error || 'Unknown error');
       }
@@ -145,6 +194,8 @@ const KrishiMitra = () => {
       setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
+      setSelectedImage(null);
+      setImagePreview(null);
     }
   };
 
@@ -157,6 +208,63 @@ const KrishiMitra = () => {
 
   const handleSuggestionClick = (suggestion) => {
     sendMessage(suggestion);
+  };
+
+  const handleImageSelect = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setSelectedImage(file);
+
+      // Create preview
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setImagePreview(reader.result);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleImageUpload = async () => {
+    if (!selectedImage) return;
+
+    setIsLoading(true);
+
+    try {
+      // Upload image to backend
+      const formData = new FormData();
+      formData.append('file', selectedImage);
+
+      const uploadResponse = await fetch(`${API_BASE_URL}/upload`, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error('Image upload failed');
+      }
+
+      const uploadData = await uploadResponse.json();
+      const imagePath = uploadData.file_path;
+
+      // Send message with image path
+      const queryText = pendingImageQuery || "Please analyze this plant image for diseases";
+      await sendMessage(queryText, imagePath);
+
+      setWaitingForImage(false);
+      setPendingImageQuery(null);
+    } catch (error) {
+      console.error('Upload error:', error);
+      const errorMessage = {
+        role: 'assistant',
+        content: language === 'English'
+          ? "Sorry, I couldn't upload the image. Please try again."
+          : "क्षमा करें, मैं तस्वीर अपलोड नहीं कर सका। कृपया पुनः प्रयास करें।",
+        timestamp: new Date(),
+        isError: true
+      };
+      setMessages(prev => [...prev, errorMessage]);
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -296,6 +404,9 @@ const KrishiMitra = () => {
                       <span className="text-xs font-semibold text-gray-500">KrishiMitra</span>
                     </div>
                   )}
+                  {msg.image && (
+                    <img src={msg.image} alt="Uploaded" className="rounded-lg mb-3 max-w-xs" />
+                  )}
                   <div className={`whitespace-pre-wrap ${msg.role === 'user' ? 'text-white' : 'text-gray-800'}`}>
                     {msg.content}
                   </div>
@@ -306,8 +417,70 @@ const KrishiMitra = () => {
               </div>
             ))}
 
+            {/* Image Upload UI */}
+            {waitingForImage && (
+              <div className="animate-fadeIn">
+                <div className="bg-white rounded-2xl shadow-lg border-2 border-green-200 p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <ImageIcon className="text-green-600" size={24} />
+                    <h3 className="font-semibold text-gray-800">{TEXT.upload_prompt[language]}</h3>
+                  </div>
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageSelect}
+                    className="hidden"
+                  />
+
+                  {!selectedImage ? (
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="w-full p-8 border-2 border-dashed border-gray-300 rounded-xl hover:border-green-500 transition-all group"
+                    >
+                      <Upload className="mx-auto mb-3 text-gray-400 group-hover:text-green-600" size={48} />
+                      <p className="text-gray-600 group-hover:text-green-700 font-medium">
+                        {TEXT.upload_button[language]}
+                      </p>
+                      <p className="text-xs text-gray-400 mt-2">JPG, PNG (Max 10MB)</p>
+                    </button>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="relative">
+                        <img src={imagePreview} alt="Preview" className="w-full rounded-xl max-h-64 object-cover" />
+                        <button
+                          onClick={() => {
+                            setSelectedImage(null);
+                            setImagePreview(null);
+                          }}
+                          className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                      <button
+                        onClick={handleImageUpload}
+                        disabled={isLoading}
+                        className="w-full py-3 bg-gradient-to-br from-green-500 to-emerald-600 text-white rounded-xl font-semibold hover:shadow-lg transition-all disabled:opacity-50"
+                      >
+                        {isLoading ? (
+                          <span className="flex items-center justify-center gap-2">
+                            <Loader2 className="animate-spin" size={20} />
+                            {language === 'English' ? 'Analyzing...' : 'विश्लेषण हो रहा है...'}
+                          </span>
+                        ) : (
+                          TEXT.analyze_button[language]
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Loading Indicator */}
-            {isLoading && (
+            {isLoading && !waitingForImage && (
               <div className="flex justify-start animate-fadeIn">
                 <div className="bg-white shadow-md rounded-3xl rounded-bl-sm border border-gray-100 px-6 py-4">
                   <div className="flex items-center gap-3">
@@ -332,7 +505,7 @@ const KrishiMitra = () => {
                   onChange={(e) => setInputValue(e.target.value)}
                   onKeyPress={handleKeyPress}
                   placeholder={TEXT.chat_placeholder[language]}
-                  disabled={isLoading}
+                  disabled={isLoading || waitingForImage}
                   rows={1}
                   className="w-full px-6 py-4 bg-transparent resize-none focus:outline-none text-gray-800 placeholder-gray-400"
                   style={{ minHeight: '56px', maxHeight: '120px' }}
@@ -340,7 +513,7 @@ const KrishiMitra = () => {
               </div>
               <button
                 onClick={() => sendMessage()}
-                disabled={!inputValue.trim() || isLoading}
+                disabled={!inputValue.trim() || isLoading || waitingForImage}
                 className="p-4 bg-gradient-to-br from-green-500 to-emerald-600 text-white rounded-2xl hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-lg"
               >
                 {isLoading ? (
@@ -355,19 +528,19 @@ const KrishiMitra = () => {
       </div>
 
       <style jsx>{`
-        @keyframes fadeIn {
-          from {
-            opacity: 0;
-            transform: translateY(10px);
+          @keyframes fadeIn {
+              from {
+                  opacity: 0;
+                  transform: translateY(10px);
+              }
+              to {
+                  opacity: 1;
+                  transform: translateY(0);
+              }
           }
-          to {
-            opacity: 1;
-            transform: translateY(0);
+          .animate-fadeIn {
+              animation: fadeIn 0.3s ease-out;
           }
-        }
-        .animate-fadeIn {
-          animation: fadeIn 0.3s ease-out;
-        }
       `}</style>
     </div>
   );
