@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, MessageSquare, Leaf, Menu, X, Upload, Image as ImageIcon } from 'lucide-react';
+import { Send, Loader2, MessageSquare, Leaf, Menu, X, Upload, ImagePlus } from 'lucide-react';
 
 const KrishiMitra = () => {
   const [language, setLanguage] = useState('English');
@@ -12,6 +12,8 @@ const KrishiMitra = () => {
   const [selectedImage, setSelectedImage] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const [pendingImageQuery, setPendingImageQuery] = useState(null);
+  // --- NEW STATE ---
+  const [imageQueryInput, setImageQueryInput] = useState('');
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const API_BASE_URL = 'http://localhost:8000';
@@ -92,6 +94,11 @@ const KrishiMitra = () => {
     image_selected: {
       English: "Image selected. Click 'Analyze Plant' to diagnose.",
       Hindi: "तस्वीर चुनी गई। निदान के लिए 'पौधे का विश्लेषण करें' पर क्लिक करें।"
+    },
+    // --- NEW TEXT ---
+    image_query_placeholder: {
+      English: "What's the issue? (e.g., 'What are these spots?')",
+      Hindi: "क्या समस्या है? (जैसे, 'ये धब्बे क्या हैं?')"
     }
   };
 
@@ -124,14 +131,14 @@ const KrishiMitra = () => {
     return imageKeywords.some(keyword => lowerResponse.includes(keyword));
   };
 
-  const sendMessage = async (text = inputValue, imagePath = null) => {
-    if ((!text.trim() && !imagePath) || isLoading) return;
+  const sendMessage = async (text = inputValue) => {
+    if (!text.trim() || isLoading) return;
 
     const userMessage = {
       role: 'user',
       content: text,
       timestamp: new Date(),
-      image: imagePreview
+      image: imagePreview // Attach the preview to the message
     };
 
     setMessages(prev => [...prev, userMessage]);
@@ -139,20 +146,13 @@ const KrishiMitra = () => {
     setIsLoading(true);
 
     try {
-      let messageToSend = text;
-
-      // If we have an image path, append it to the message
-      if (imagePath) {
-        messageToSend = `${text} [Image path: ${imagePath}]`;
-      }
-
       const response = await fetch(`${API_BASE_URL}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          transcript: messageToSend,
+          transcript: text,
           language: language,
           thread_id: threadId
         })
@@ -196,6 +196,7 @@ const KrishiMitra = () => {
       setIsLoading(false);
       setSelectedImage(null);
       setImagePreview(null);
+      setImageQueryInput(''); // --- MODIFICATION: Clear query input
     }
   };
 
@@ -221,6 +222,10 @@ const KrishiMitra = () => {
         setImagePreview(reader.result);
       };
       reader.readAsDataURL(file);
+
+      setWaitingForImage(true);
+      setPendingImageQuery(null);
+      setImageQueryInput(''); // --- MODIFICATION: Clear previous query
     }
   };
 
@@ -230,7 +235,7 @@ const KrishiMitra = () => {
     setIsLoading(true);
 
     try {
-      // Upload image to backend
+      // Upload image to backend (saves to fixed path)
       const formData = new FormData();
       formData.append('file', selectedImage);
 
@@ -244,14 +249,16 @@ const KrishiMitra = () => {
       }
 
       const uploadData = await uploadResponse.json();
-      const imagePath = uploadData.file_path;
 
-      // Send message with image path
-      const queryText = pendingImageQuery || "Please analyze this plant image for diseases";
-      await sendMessage(queryText, imagePath);
+      // --- MODIFICATION: Use new query text logic ---
+      const queryText = imageQueryInput.trim() || pendingImageQuery || "Please analyze this plant image for diseases";
+
+      // Send message - backend will use the fixed path
+      await sendMessage(queryText);
 
       setWaitingForImage(false);
       setPendingImageQuery(null);
+      // Note: imageQueryInput is cleared in sendMessage's finally block
     } catch (error) {
       console.error('Upload error:', error);
       const errorMessage = {
@@ -422,17 +429,9 @@ const KrishiMitra = () => {
               <div className="animate-fadeIn">
                 <div className="bg-white rounded-2xl shadow-lg border-2 border-green-200 p-6">
                   <div className="flex items-center gap-3 mb-4">
-                    <ImageIcon className="text-green-600" size={24} />
+                    <ImagePlus className="text-green-600" size={24} />
                     <h3 className="font-semibold text-gray-800">{TEXT.upload_prompt[language]}</h3>
                   </div>
-
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageSelect}
-                    className="hidden"
-                  />
 
                   {!selectedImage ? (
                     <button
@@ -453,12 +452,23 @@ const KrishiMitra = () => {
                           onClick={() => {
                             setSelectedImage(null);
                             setImagePreview(null);
+                            setImageQueryInput(''); // --- MODIFICATION: Clear on cancel
                           }}
                           className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition"
                         >
                           <X size={16} />
                         </button>
                       </div>
+
+                      {/* --- NEW TEXT INPUT --- */}
+                      <input
+                        type="text"
+                        value={imageQueryInput}
+                        onChange={(e) => setImageQueryInput(e.target.value)}
+                        placeholder={TEXT.image_query_placeholder[language]}
+                        className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-lg focus:outline-none focus:border-green-500 transition-all"
+                      />
+
                       <button
                         onClick={handleImageUpload}
                         disabled={isLoading}
@@ -497,8 +507,27 @@ const KrishiMitra = () => {
 
         {/* Input Area */}
         <div className="bg-white/80 backdrop-blur-md border-t border-gray-200 px-6 py-4">
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleImageSelect}
+            className="hidden"
+          />
+
           <div className="max-w-4xl mx-auto">
             <div className="flex gap-3 items-end">
+
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isLoading || waitingForImage}
+                className="p-4 bg-white rounded-2xl shadow-lg border-2 border-gray-200 hover:border-green-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                aria-label="Upload image"
+              >
+                <ImagePlus size={24} className="text-gray-500 hover:text-green-600" />
+              </button>
+
               <div className="flex-1 bg-white rounded-2xl shadow-lg border-2 border-gray-200 focus-within:border-green-500 transition-all">
                 <textarea
                   value={inputValue}
